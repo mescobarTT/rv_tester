@@ -6,21 +6,6 @@
 #include "cvm/random.hpp"
 #include "device_address_map/device_address_map.h"
 #include "rv_tester_plusargs.h"
-#include "svdpi.h"
-
-// DPI export from rv_tester.sv: returns the TB clock counter.
-extern "C" uint64_t rv_tester_get_clocks();
-
-namespace {
-// Scope of the rv_tester instance that owns rv_tester_get_clocks(), captured
-// once at registry build time so that the EAM (a process-wide singleton called
-// from arbitrary axi contexts) can set it before the exported call.
-svScope rv_tester_scope = nullptr;
-} // namespace
-
-extern "C" void eam_register_scope() {
-  rv_tester_scope = svGetScope();
-}
 
 DEFINE_int32(eam_decline_excl_pct, 0, "Percentage of exclusive reads (ARLOCK) the EAM declines: no reservation is taken and OKAY is returned instead of EXOKAY");
 DEFINE_string(eam_pass_invalidate_ratio, "1:0", "Exclusive write (AWLOCK) pass/fail pattern in format 'n:e': n exclusive writes succeed, then e are failed (reservation invalidated), repeating");
@@ -197,16 +182,14 @@ bool eam::pattern_fail_excl_write() {
   return phase >= pattern_pass_;
 }
 
-uint64_t eam::current_cycles() {
-  if (FLAGS_eam_reservation_ttl == 0 || rv_tester_scope == nullptr)
-    return 0;
+void eam::set_cycle_source(cycle_source_t src) {
+  cycle_source_ = src;
+}
 
-  const svScope prev = svGetScope();
-  svSetScope(rv_tester_scope);
-  const uint64_t now = rv_tester_get_clocks();
-  if (prev != nullptr)
-    svSetScope(prev);
-  return now;
+uint64_t eam::current_cycles() {
+  if (FLAGS_eam_reservation_ttl == 0 || cycle_source_ == nullptr)
+    return 0;
+  return cycle_source_();
 }
 
 bool eam::ttl_expired(const eam_entry& e, uint64_t now) {
