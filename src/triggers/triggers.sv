@@ -71,15 +71,21 @@ module triggers
 
   /* verilator lint_off BLKANDNBLK */
   /* verilator lint_off BLKSEQ */
+  // HDLice rejects a variable written with both blocking and nonblocking
+  // assignments, so the within-cycle value is carried in a separate variable.
+  int unsigned cur_interrupt_count_now;
+
   always @(posedge clk) begin
     clocks <= clocks + 1;
     trigger_interrupt_delayed <= trigger_interrupt;
+    cur_interrupt_count_now = cur_interrupt_count;
     if (hart_specific_event_trigger[INTERRUPT]) begin
-      cur_interrupt_count = interrupt_injection_count;
+      cur_interrupt_count_now = interrupt_injection_count;
+      cur_interrupt_count <= interrupt_injection_count;
       next_interrupt_clock = clocks + interrupt_injection_initial_delay;
       // Latch event_trigger_vlds when initial trigger occurs
       event_trigger_vlds_latched <= event_trigger_vlds;
-      interrupt_sequence_active = (cur_interrupt_count > 0);
+      interrupt_sequence_active = (cur_interrupt_count_now > 0);
     end
     if (reset) begin
       trigger_interrupt <= 1'b0;
@@ -88,13 +94,13 @@ module triggers
     end
     else begin
       trigger_interrupt = 1'b0;
-      if ((cur_interrupt_count > 0) && (clocks == next_interrupt_clock)) begin
+      if ((cur_interrupt_count_now > 0) && (clocks == next_interrupt_clock)) begin
         trigger_interrupt = 1'b1;
-        cur_interrupt_count <= cur_interrupt_count - 1;
+        cur_interrupt_count <= cur_interrupt_count_now - 1;
         next_interrupt_clock <= clocks + get_random_in_range(interrupt_injection_rand_delay_min, interrupt_injection_rand_delay_max);
       end
       // Clear latched value and flag when all interrupts are sent
-      if (cur_interrupt_count == 0) begin
+      if (cur_interrupt_count_now == 0) begin
         event_trigger_vlds_latched <= '0;
         interrupt_sequence_active <= 1'b0;
       end
