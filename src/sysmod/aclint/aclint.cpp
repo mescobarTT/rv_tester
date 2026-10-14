@@ -42,7 +42,7 @@ struct scope_guard {
     }
   }
   ~scope_guard() {
-    if (active_)
+    if (active_ && prev_)
       svSetScope(prev_);
   }
 };
