@@ -83,6 +83,10 @@ public:
   uint64_t tb_fail_cnt() const { return tb_fail_cnt_; }
   bool tb_fail_en() const { return tb_fail_en_; }
 
+  // Optional TB cycle counter. An unset source reports 0.
+  using cycle_source_t = uint64_t (*)();
+  void set_cycle_source(cycle_source_t src);
+
 private:
   // Returns true if this exclusive write must be failed by the trickbox
   // injection mechanism: tb_fail_en_ is armed, a.addr and tb_fail_addr_
@@ -101,9 +105,9 @@ private:
   // of +eam_pass_invalidate_ratio. Advances the mod-(n+e) counter.
   bool pattern_fail_excl_write();
 
-  // Current TB clock count, fetched from SV. Returns 0 (no DPI call) when
-  // +eam_reservation_ttl is disabled or the rv_tester scope is not registered.
-  static uint64_t current_cycles();
+  // TB cycle count from the installed source. Returns 0 when
+  // +eam_reservation_ttl is disabled or no source is installed.
+  uint64_t current_cycles();
 
   // Returns true if the reservation has been held for at least
   // +eam_reservation_ttl cycles and must therefore fail the exclusive write.
@@ -152,6 +156,8 @@ private:
   bool tb_fail_en_ = false;
   // Number of failures injected since tb_fail_en_ was last written to 1.
   uint64_t tb_fail_injected_ = 0;
+
+  cycle_source_t cycle_source_ = nullptr;
 
   // Metrics.
   uint64_t declined_excl_read_count_ = 0;

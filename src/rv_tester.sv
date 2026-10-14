@@ -124,7 +124,7 @@ module rv_tester
   import "DPI-C" context function bit rv_tester_flush_callbacks();
   import "DPI-C" context function bit rv_tester_perf_calc(int init, int reset_done, int term, LU clocks);
   import "DPI-C" context function void rv_tester_clock_monitor(LU clocks, int unsigned clock_mode);
-  // Registers this scope in the EAM so that it can call rv_tester_get_clocks().
+  // Captures this scope and installs the TB cycle counter on the EAM.
   import "DPI-C" context function void eam_register_scope();
 
   localparam int unsigned MaxInFlightReadReq = topology.TOP.PLATFORM.MAX_IN_FLIGHT_READ_REQ;
