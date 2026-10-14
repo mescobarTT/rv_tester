@@ -85,11 +85,8 @@ module sysmod
       $display("[sysmod]: reset");
       clocks <= 0;
       /* verilator lint_off BLKSEQ */
-      //jtag_quiesced = 0;
       sysmod_tick_async = cvm_plusargs::get_bool("sysmod_tick_async") != '0;
       terminate = '0;
-      debug_req_vld_d = '0;
-      for (int h = 0; h < NHARTS; h++) debug_req_hold_cnt[h] = 0;
       /* verilator lint_on BLKSEQ */
     end
   end
@@ -199,6 +196,11 @@ module sysmod
 
     /* verilator lint_off BLKSEQ */
     for (int h = 0; h < NHARTS; h++) begin
+      if (reset) begin
+        debug_req_vld_d[h] = 1'b0;
+        debug_req_hold_cnt[h] = 0;
+      end
+      else
       if (debug_req_vld_d[h] && (debug_req_hold_cnt[h] != 0)) begin
         debug_req_hold_cnt[h] = debug_req_hold_cnt[h] - 1;
         if (debug_req_hold_cnt[h] == 0) debug_req_vld_d[h] = 1'b0;

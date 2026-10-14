@@ -5,7 +5,9 @@ module rv_tester
   import rv_tester_params::*,
     pmu_pkg::INSTRUCTIONS;
   #(
-    parameter bit EXTERNAL_CLOCK            =       0,
+    parameter bit EXTERNAL_CLOCK            = 0,
+    parameter int unsigned NUM_CLK_PROFILES = 0,
+    parameter bit [NUM_CLK_PROFILES:0][NCLKS-1:0][31:0] CLK_PROFILE_FREQ_MHZ = CLOCK_FREQ_MHZ,
     parameter int unsigned CVM_DONE_DELAY_CYCLES         = 500,
     parameter int unsigned CVM_DONE_DRAINED_DELAY_CYCLES = 500,
     `TOPOLOGY
@@ -35,17 +37,20 @@ module rv_tester
 
   logic fastest_clk;
 
-  function automatic int unsigned find_max_freq(bit [NCLKS-1:0][31:0] freqs);
+  localparam int unsigned NUM_CLK_MODES = NUM_CLK_PROFILES + 1;
+  localparam int unsigned CLK_MODE_W    = NUM_CLK_PROFILES == 0 ? 1 : $clog2(NUM_CLK_MODES);
+
+  function automatic int unsigned find_max_freq(bit [NUM_CLK_MODES-1:0][NCLKS-1:0][31:0] freqs);
     int unsigned max_val = 0;
-    foreach (freqs[c]) begin
-      if (freqs[c] > max_val) begin
-        max_val = freqs[c];
+    foreach (freqs[m, c]) begin
+      if (freqs[m][c] > max_val) begin
+        max_val = freqs[m][c];
       end
     end
     return max_val;
   endfunction
 
-  localparam int max_clock_freq_overall = find_max_freq(CLOCK_FREQ_MHZ);
+  localparam int max_clock_freq_overall = find_max_freq(CLK_PROFILE_FREQ_MHZ);
 
 `ifdef PALLADIUM_CAKE1X
   IXCclkgen #(max_clock_freq_overall) uclk (fastest_clk);
@@ -53,19 +58,50 @@ module rv_tester
   assign fastest_clk = '0;
 `endif
 
-  // Clock-profile muxing is a platform policy and lives in the harness; with
-  // EXTERNAL_CLOCK the harness supplies every domain through clk_ext.
+  /* verilator lint_off UNOPTFLAT */
+  logic [CLK_MODE_W-1:0] clock_mode = '0;
+  /* verilator lint_on UNOPTFLAT */
+  logic [CLK_MODE_W-1:0] clock_mode_next;
+  logic [NUM_CLK_MODES-1:0] mode_clk [NCLKS-1:0];
+  int clk_profile = 0;
+  int freq_switch_ncycles = 0;
+  bit dyn_clk_switch = '0;
+  bit rv_tester_reset_d1 = '0;
+
   if (EXTERNAL_CLOCK) begin
     for (genvar c = 0; c < NCLKS; c++) begin
       assign clk[c] = clk_ext[c];
     end
   end else begin
-    for (genvar c = 0; c < NCLKS; c++) begin
-      rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(clk[c]), .fastest_clk(fastest_clk));
+    for (genvar c = 0; c < NCLKS; c++) begin : g_clk
+      if (NUM_CLK_PROFILES == 0 || c == TB_CLK_IDX || c == REF_CLK_IDX) begin : g_fixed
+        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLK_PROFILE_FREQ_MHZ[0][c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(clk[c]), .fastest_clk(fastest_clk));
+      end else begin : g_muxed
+        for (genvar m = 0; m < NUM_CLK_MODES; m++) begin : g_mode
+          rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLK_PROFILE_FREQ_MHZ[m][c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(mode_clk[c][m]), .fastest_clk(fastest_clk));
+        end
+        assign clk[c] = mode_clk[c][clock_mode];
+      end
     end
   end
 
-  //import "DPI-C" function void rv_tester_streaming_dpi_init();
+  always_comb begin
+    clock_mode_next = clock_mode;
+    if (rv_tester_reset || rv_tester_reset_d1 || !dyn_clk_switch) begin
+      clock_mode_next = CLK_MODE_W'(clk_profile);
+    end else if (clocks > 10 && freq_switch_ncycles != 0 && (clocks % longint'(freq_switch_ncycles)) == 0) begin
+      clock_mode_next = (clock_mode == CLK_MODE_W'(NUM_CLK_PROFILES)) ? CLK_MODE_W'(1) : clock_mode + 1'b1;
+    end
+  end
+
+  always @(posedge dut_clk[TB_CLK_IDX]) begin
+    rv_tester_reset_d1 <= rv_tester_reset;
+    clock_mode         <= clock_mode_next;
+    if (clock_mode_next != clock_mode) begin
+      $display("<%0d> rv_tester: clock_mode %0d -> %0d", clocks, clock_mode, clock_mode_next);
+    end
+  end
+
   import "DPI-C" function void rv_tester_streaming_dpi_shutdown();
   import "DPI-C" function int rv_tester_init(); // dummy return value so that this gets called immediately. need this to happen before any other DPIs are called.
   import "DPI-C" function void rv_tester_set_seed();
@@ -76,7 +112,8 @@ module rv_tester
   import "DPI-C" function byte unsigned rv_tester_shutdown_registry(bit all_domains);
   import "DPI-C" context function bit rv_tester_flush_callbacks();
   import "DPI-C" context function bit rv_tester_perf_calc(int init, int reset_done, int term, LU clocks);
-  // Registers this scope in the EAM so that it can call rv_tester_get_clocks().
+  import "DPI-C" context function void rv_tester_clock_monitor(LU clocks, int unsigned clock_mode);
+  // Captures this scope and installs the TB cycle counter on the EAM.
   import "DPI-C" context function void eam_register_scope();
 
   localparam int unsigned MaxInFlightReadReq = topology.TOP.PLATFORM.MAX_IN_FLIGHT_READ_REQ;
@@ -122,11 +159,10 @@ module rv_tester
   logic cvm_done_drained;
   logic terminated_1T = '0;
   logic rerun_now;
-  /* verilator lint_off UNOPTFLAT */
   rv_tester_pkg::terminate_t rv_tester_error_terminate;
-  /* verilator lint_off UNOPTFLAT */
   rv_tester_pkg::terminate_t cosim_terminate [NHARTS-1:0];
   logic cosim_terminate_any;
+  logic sysmod_cosim_dmi_terminate;
   longint unsigned instructions = 0;
 
   int quiesce_counter = 0;
@@ -136,7 +172,6 @@ module rv_tester
   int ndmreset_ack_delay = 0;
 
   int trace_timeout;
-
   int assertion_test_cycle = 0;
 
   logic streaming_dpi_shutdowned = 0;
@@ -151,7 +186,6 @@ module rv_tester
   int unsigned cvm_verbosity, cvm_debug_verbosity, curr_cvm_verbosity;
   LU cvm_debug_cycle_on = '0;
   LU cvm_debug_cycle_off = '0;
-  //logic dut_terminate_any;
 
   bit rv_tester_reset_dut_clk;
   bit rv_tester_reset_core_clk_d1;
@@ -159,9 +193,6 @@ module rv_tester
   bit rv_tester_reset_core_clk_d3;
   logic rv_tester_streaming_dpi_init;
   bit rv_tester_dpi_init_done;
-  
-  // Termination condition variables for better readability
-  logic sysmod_cosim_dmi_terminate;
 
   reg [49:0] dut_reset_req_shift_reg;
 
@@ -205,7 +236,6 @@ module rv_tester
     rv_tester_reset <= rerun_now;
     clocks          <= clocks + 1;
 
-
 `ifndef NO_TIMESTAMP
     current_time <= $time;
 `else
@@ -229,25 +259,6 @@ module rv_tester
     end
   end
 
-  always @(posedge dut_clk[TB_CLK_IDX]) begin
-    if (!rv_tester_reset && cvm_debug_cycle_off > 0) begin
-      if (curr_cvm_verbosity != cvm_debug_verbosity && clocks >= cvm_debug_cycle_on && clocks <= cvm_debug_cycle_off) begin
-        cvm_logger::set_verbosity(cvm_debug_verbosity);
-        curr_cvm_verbosity <= cvm_debug_verbosity;
-      end else if (curr_cvm_verbosity != cvm_verbosity && clocks >= cvm_debug_cycle_off) begin
-        cvm_logger::set_verbosity(cvm_verbosity);
-        curr_cvm_verbosity <= cvm_verbosity;
-      end
-    end
-  end
-
-
-  always @(posedge dut_clk[TB_CLK_IDX]) begin
-    if(rerun_now) begin
-      $display("<%0d> [RVTESTER]: rerunning test %0d time(s)", clocks, num_reruns);
-    end
-  end
-
   /*
    * Group all zebu zDPI DPIs here
    * These are run on a separate thread than the slower zebi3
@@ -255,10 +266,6 @@ module rv_tester
   always @(posedge dut_clk[TB_CLK_IDX]) begin
     if (rv_tester_reset) begin
       streaming_dpi_shutdowned <= 0;
-
-      // Used for offine DPI
-      //rv_tester_streaming_dpi_init();
-      //rv_tester_reset_dut_clk <= 1'b1;
     end
     if (terminated && !streaming_dpi_shutdowned) begin
       // Used for zebu offline DPI to shutdown the registry
@@ -341,9 +348,11 @@ module rv_tester
 
     automatic int _, _cvm_verbosity, _gen_clocks_verbosity, _gen_timestamp_verbosity;
 
+    if(rerun_now) begin
+      $display("<%0d> [RVTESTER]: rerunning test %0d time(s)", clocks, num_reruns);
+    end
     if (rv_tester_reset || rvt_reload) begin
-      if (rv_tester_reset || (rvt_reload && $test$plusargs("whisper_loadfrom")))
-      begin
+      if (rv_tester_reset || (rvt_reload && $test$plusargs("whisper_loadfrom"))) begin
         $display("[RVTESTER]: new test");
         _ = rv_tester_init();
         /* RVDE-31919 CVM_REGISTRY_SET_SCOPE
@@ -358,7 +367,6 @@ module rv_tester
         /* verilator lint_off BLKSEQ */
         rv_tester_error_terminate.terminate = '0;
         /* verilator lint_on BLKSEQ */
-  
   
         if (rv_tester_reset) begin
           if(num_builds < 0) begin
@@ -382,8 +390,6 @@ module rv_tester
         perf_period                 = cvm_plusargs::get_int("perf_period");
         /* verilator lint_on BLKSEQ */
   
-  
-        // Resolved by eot during rv_tester_build_registry above.
         eot_addr                        <= cvm_plusargs::get_ulongint("tohost");
         eot_status                      <= 1;
         eot_syscall                     <= 0;
@@ -392,18 +398,29 @@ module rv_tester
         quiesce_timeout                 <= cvm_plusargs::get_int("quiesce_timeout");
         ndmreset_ack_delay              <= cvm_plusargs::get_int("ndmreset_ack_delay");
         trace_timeout                   <= cvm_plusargs::get_int("trace_timeout");
+        freq_switch_ncycles             <= cvm_plusargs::get_int("freq_switch_ncycles");
+        clk_profile                     <= cvm_plusargs::get_int("clk_profile");
+        dyn_clk_switch                  <= cvm_plusargs::get_bool("dyn_clk_switch") != '0;
         call_finish                     <= cvm_plusargs::get_bool("terminate_call_finish") != '0;
         gen_clocks                      <= _cvm_verbosity >= _gen_clocks_verbosity;
         gen_timestamp                   <= _cvm_verbosity >= _gen_timestamp_verbosity;
         assertion_test_cycle            <= cvm_plusargs::get_int("assertion_test_cycle");
         overlay_mmr_en                  <= cvm_plusargs::get_bool("overlay_mmr_en") != '0;
-        perf_count                      <= '0;
   
         cvm_verbosity        <= _cvm_verbosity;
         curr_cvm_verbosity   <= _cvm_verbosity;
         cvm_debug_verbosity  <= cvm_logger::get_verbosity_from_plusargs("cvm_debug_verbosity");
         cvm_debug_cycle_on   <= cvm_plusargs::get_ulongint("cvm_debug_cycle_on");
         cvm_debug_cycle_off  <= cvm_plusargs::get_ulongint("cvm_debug_cycle_off");
+      end
+    end
+    else if (cvm_debug_cycle_off > 0) begin
+      if (curr_cvm_verbosity != cvm_debug_verbosity && clocks >= cvm_debug_cycle_on && clocks <= cvm_debug_cycle_off) begin
+        cvm_logger::set_verbosity(cvm_debug_verbosity);
+        curr_cvm_verbosity <= cvm_debug_verbosity;
+      end else if (curr_cvm_verbosity != cvm_verbosity && clocks >= cvm_debug_cycle_off) begin
+        cvm_logger::set_verbosity(cvm_verbosity);
+        curr_cvm_verbosity <= cvm_verbosity;
       end
     end
     num_reruns      <= num_reruns - int'(rerun_now);
@@ -413,8 +430,8 @@ module rv_tester
 
     rvt_reload_d2 <= rvt_reload_d1;
     rvt_reload_d1 <= rvt_reload;
-
   end
+
 
   /*
    * rv_tester_shutdown_registry could be called at the same time as
