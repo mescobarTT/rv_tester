@@ -22,7 +22,7 @@ The main components involved here are:
 - **AXI MST SW** — Converts C++ transactions into SystemVerilog bus-level activity.
 - **Sysmod** — System model that divides the address space per the memmap and routes requests to device models. See `[src/sysmod/](src/sysmod/README.md)`.
 - **Devices (CLINT, HTIF, DM, ...)** — Model device-specific functionality.
-- **Clocking & reset** — Per-domain clock generation, optional glitch-free clock-profile muxing for dynamic frequency switching, external-clock support, and cold/warm reset sequencing (including DUT-requested warm resets) across clock domains.
+- **Clocking & reset** — Per-domain clock generation, external-clock support (the harness MAY supply clocks through `clk_ext`, for example to mux between platform clock profiles), and cold/warm reset sequencing (including DUT-requested warm resets) across clock domains.
 - **Lifecycle & DPI bring-up** — Parses plusargs, seeds randomization, builds and tears down the `C++` object registry, and orders DPI initialization against reset so the `C++` side is ready before the core leaves reset.
 - **Termination & rerun** — Aggregates termination sources (DUT, cosim, sysmod/HTIF, DMI timeout, errors), drives a graceful quiesce/drain handshake, prints PASS metrics, and supports rerunning or warm-resetting a test.
 - **Performance & monitoring** — Periodic and end-of-test performance calculation, instruction counting, and clock monitoring.

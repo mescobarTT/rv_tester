@@ -41,6 +41,8 @@ DEFINE_bool(smc_sweep_test, false, "Set this while running small core sram sweep
 DEFINE_int32(ndmreset_ack_delay, 0, "Delay after which ndmreset ack is asserted");
 DEFINE_bool(time_mtime_sync_enable, true, "Enable time and mtime sync check");
 DEFINE_int32(trace_timeout, 60000, "trace test end timeout after to host end call");
+// Consumed by the harness clock-profile mux and pwrmgmt; defined here so every
+// platform links them even when it does not instantiate the mux.
 DEFINE_int32(freq_switch_ncycles, 5000, "Switch clk frequencies after freq_switch_ncycles");
 DEFINE_int32(clk_profile, 0, "Clk profile to drive various clocks");
 DEFINE_bool(dyn_clk_switch, false, "Enable dynamic clk switching");
@@ -302,9 +304,6 @@ void rv_tester_streaming_dpi_shutdown() {
   }
 }
 
-void rv_tester_clock_monitor(const uint64_t clocks, const uint32_t clock_mode) {
-  cvm::log(cvm::MEDIUM, "[{}] [CLOCK_MONITOR]: clock_mode={}\n", clocks, clock_mode);
-}
 }
 
 svScope logger_instrument::scope;
