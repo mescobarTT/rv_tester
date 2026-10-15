@@ -62,6 +62,8 @@ DEFINE_uint32(derr_interrupt_num_default, 23, "DERR interrupt default number");
 DEFINE_string(hart_mhartid, "",
               "mhartid of each hart, in +hart_enable_id order. Ex: 0,8. Hart i then runs on the whisper hart "
               "with index hart_mhartid[i], whose MHARTID is that value. Empty: hart i runs on whisper hart i.");
+DEFINE_uint64(wfi_timeout_standalone, 0, "Standalone whisper wfi timeout in cycles");
+DEFINE_bool(mtip_standalone, false, "Enable MTIP in standalone whisper");
 #include "iss_utils.h"
 
 extern void (*__tracerExtension)(void*);
@@ -1289,8 +1291,11 @@ whisperClient<URV>::overrideWhisperJson(bool standalone) {
     return "";
   }
 
-  if (standalone)
-    j["wfi_timeout"] = 0;
+  if (standalone) {
+    j["wfi_timeout"] = FLAGS_wfi_timeout_standalone;
+    if (FLAGS_mtip_standalone)
+      j["enable_mtip"] = true;
+  }
 
   if (!standalone)
     j["auto_increment_timer"] = FLAGS_whisper_auto_increment_timer;
