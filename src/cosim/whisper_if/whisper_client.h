@@ -154,6 +154,7 @@ public:
   bool whisperSnapshotSave();
   bool whisperSetAmoAllow(int hart, bool allowNonCacheable, bool allowIo, bool& valid);
   bool whisperSetClearTinstLrSc(int hart, bool enable, bool& valid);
+  bool whisperEnablePmaMasks(int hart, bool enable, bool& valid);
   bool whisperNmi(int hart, uint64_t time, uint64_t cause);
   bool whisperClearNmi(int hart, uint64_t time);
   bool whisperClearNmiCause(int hart, uint64_t time, uint64_t cause);
@@ -226,4 +227,5 @@ public:
   CVM_MESSENGER_procedure_call(whisperSnapshotSaveRPC, bool(void));
   CVM_MESSENGER_procedure_call(whisperSetAmoAllowRPC, bool(int, bool, bool, bool&));
   CVM_MESSENGER_procedure_call(whisperSetClearTinstLrScRPC, bool(int, bool, bool&));
+  CVM_MESSENGER_procedure_call(whisperEnablePmaMasksRPC, bool(int, bool, bool&));
 };
