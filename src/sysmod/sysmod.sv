@@ -57,6 +57,13 @@ module sysmod
   logic [NHARTS-1:0] debug_req_vld_d = '0;
   logic [NHARTS-1:0] debug_req_vld_q;
   int unsigned debug_req_hold_cnt [NHARTS-1:0] = '{default: 0};
+  // sysmod_debug_req_vld only records a request (value plus a bumped sequence
+  // number); the clocked block below is the single writer of debug_req_vld_d and
+  // debug_req_hold_cnt, because emulator synthesis rejects a variable driven from
+  // several processes ("multiple drivers which are not all tristate").
+  bit          debug_req_set_val  [NHARTS-1:0] = '{default: 0};
+  int unsigned debug_req_set_seq  [NHARTS-1:0] = '{default: 0};
+  int unsigned debug_req_set_seen [NHARTS-1:0] = '{default: 0};
 
   /* verilator lint_on BLKANDNBLK */
 
@@ -88,8 +95,6 @@ module sysmod
       //jtag_quiesced = 0;
       sysmod_tick_async = cvm_plusargs::get_bool("sysmod_tick_async") != '0;
       terminate = '0;
-      debug_req_vld_d = '0;
-      for (int h = 0; h < NHARTS; h++) debug_req_hold_cnt[h] = 0;
       /* verilator lint_on BLKSEQ */
     end
   end
@@ -163,8 +168,8 @@ module sysmod
   assign debug_req_vld = debug_req_vld_q;
 
   function void sysmod_debug_req_vld (int unsigned hartid, int unsigned val);
-    debug_req_vld_d[hartid] = val[0];
-    debug_req_hold_cnt[hartid] = val[0] ? DEBUG_REQ_HOLD_CLKS : 0;
+    debug_req_set_val[hartid] = val[0];
+    debug_req_set_seq[hartid] = debug_req_set_seq[hartid] + 1;
   endfunction
   export "DPI-C" function sysmod_debug_req_vld;
 
@@ -195,6 +200,19 @@ module sysmod
       interrupt_q[h].mtime <= aclint_mtime;
     end
 
+    /* verilator lint_off BLKSEQ */
+    for (int h = 0; h < NHARTS; h++) begin
+      if (reset) begin
+        debug_req_vld_d[h]    = 1'b0;
+        debug_req_hold_cnt[h] = 0;
+        debug_req_set_seen[h] = debug_req_set_seq[h];
+      end else if (debug_req_set_seen[h] != debug_req_set_seq[h]) begin
+        debug_req_set_seen[h] = debug_req_set_seq[h];
+        debug_req_vld_d[h]    = debug_req_set_val[h];
+        debug_req_hold_cnt[h] = debug_req_set_val[h] ? DEBUG_REQ_HOLD_CLKS : 0;
+      end
+    end
+    /* verilator lint_on BLKSEQ */
     debug_req_vld_q <= debug_req_vld_d;
 
     /* verilator lint_off BLKSEQ */
