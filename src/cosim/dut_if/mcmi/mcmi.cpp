@@ -448,6 +448,9 @@ void mcmi::process(const rv_tester_transactions::cosim::m_mcmi_ifetch_resp<>& m_
     }
     active_ncio_fetches_.emplace_back(m);
   } else {
+    // Non-coherent I$ evicts silently; drop whisper's copy so the refill re-reads memory.
+    if (is_noncoherent_icache(m.attr))
+      process(rv_tester_transactions::cosim::m_mcmi_ievict<>(loc_, m.cycle, m_mcmi_ifetch_resp.hart, m.pa));
     bridge_->process_dut_mcm_ifetch(m_mcmi_ifetch_resp.hart, m);
     if (!ncio_fetches_.empty()) {
       ncio_mem_transition_ = true;
@@ -608,6 +611,10 @@ bool mcmi::debug_fetch_access(uint64_t addr) {
 
 bool mcmi::is_ncio(uint32_t mem_attr) {
   return ((mem_attr & 0x800) != 0) || ((mem_attr & 0x1000) == 0);
+}
+
+bool mcmi::is_noncoherent_icache(uint32_t mem_attr) {
+  return (mem_attr & 0x80000000) != 0;
 }
 
 bool mcmi::check_axi_error(uint64_t addr) {
