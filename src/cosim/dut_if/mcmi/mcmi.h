@@ -64,6 +64,7 @@ private:
   bool patch_fetch_access(uint64_t addr);
   bool debug_fetch_access(uint64_t addr);
   bool is_ncio(uint32_t mem_attr);
+  bool is_noncoherent_icache(uint32_t mem_attr);
   bool check_axi_error(uint64_t addr);
   std::bitset<256> stringToBitset(const std::string& hexString);
   std::bitset<256> extract_bits_as_bitset(const std::bitset<256>& bitset, size_t msb, size_t lsb);
