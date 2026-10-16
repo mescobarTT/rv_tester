@@ -5,7 +5,9 @@ module rv_tester
   import rv_tester_params::*,
     pmu_pkg::INSTRUCTIONS;
   #(
-    parameter bit EXTERNAL_CLOCK            =       0,
+    parameter bit EXTERNAL_CLOCK            = 0,
+    parameter int unsigned NUM_CLK_PROFILES = 0,
+    parameter bit [NUM_CLK_PROFILES:0][NCLKS-1:0][31:0] CLK_PROFILE_FREQ_MHZ = CLOCK_FREQ_MHZ,
     parameter int unsigned CVM_DONE_DELAY_CYCLES         = 500,
     parameter int unsigned CVM_DONE_DRAINED_DELAY_CYCLES = 500,
     `TOPOLOGY
@@ -28,47 +30,27 @@ module rv_tester
     logic [topology.TOP.PLATFORM.AXI_SW[AXI_IDX].ADDR_WIDTH-1:0] end_addr;
   } xbar_rule_t;
 
-  bit flag_force_ref_clk;
-  bit force_ref_clk_d1;
-  bit force_ref_clk_d2;
   logic rv_tester_reset = '1;
   assign rv_tester_reset_ = rv_tester_reset;
-
-  /* verilator lint_off UNOPTFLAT */
-  logic [2:0] clock_mode = 3'b000;
-  /* verilator lint_on UNOPTFLAT */
-  logic  def_clk      [NCLKS-1:0];
-  logic  profile1_clk [NCLKS-1:0];
-  logic  profile2_clk [NCLKS-1:0];
-  logic  profile3_clk [NCLKS-1:0];
-  logic  profile4_clk [NCLKS-1:0];
-  logic  profile5_clk [NCLKS-1:0];
-  logic  profile6_clk [NCLKS-1:0];
 
   bit rvt_reload_d1, rvt_reload_d2;
 
   logic fastest_clk;
-  localparam bit [6:0][NCLKS-1:0][31:0] ALL_PROFILE_FREQS = {
-                                                             PROFILE1_CLOCK_FREQ_MHZ,
-                                                             PROFILE2_CLOCK_FREQ_MHZ,
-                                                             PROFILE3_CLOCK_FREQ_MHZ,
-                                                             PROFILE4_CLOCK_FREQ_MHZ,
-                                                             PROFILE5_CLOCK_FREQ_MHZ,
-                                                             PROFILE6_CLOCK_FREQ_MHZ,
-                                                             CLOCK_FREQ_MHZ
-                                                             };
 
-  function automatic int unsigned find_overall_max_freq(bit [6:0][NCLKS-1:0][31:0] all_freqs);
+  localparam int unsigned NUM_CLK_MODES = NUM_CLK_PROFILES + 1;
+  localparam int unsigned CLK_MODE_W    = NUM_CLK_PROFILES == 0 ? 1 : $clog2(NUM_CLK_MODES);
+
+  function automatic int unsigned find_max_freq(bit [NUM_CLK_MODES-1:0][NCLKS-1:0][31:0] freqs);
     int unsigned max_val = 0;
-    foreach (all_freqs[i, j]) begin
-      if (all_freqs[i][j] > max_val) begin
-        max_val = all_freqs[i][j];
+    foreach (freqs[m, c]) begin
+      if (freqs[m][c] > max_val) begin
+        max_val = freqs[m][c];
       end
     end
     return max_val;
   endfunction
 
-  localparam int max_clock_freq_overall = find_overall_max_freq(ALL_PROFILE_FREQS);
+  localparam int max_clock_freq_overall = find_max_freq(CLK_PROFILE_FREQ_MHZ);
 
 `ifdef PALLADIUM_CAKE1X
   IXCclkgen #(max_clock_freq_overall) uclk (fastest_clk);
@@ -76,43 +58,50 @@ module rv_tester
   assign fastest_clk = '0;
 `endif
 
+  /* verilator lint_off UNOPTFLAT */
+  logic [CLK_MODE_W-1:0] clock_mode = '0;
+  /* verilator lint_on UNOPTFLAT */
+  logic [CLK_MODE_W-1:0] clock_mode_next;
+  logic [NUM_CLK_MODES-1:0] mode_clk [NCLKS-1:0];
+  int clk_profile = 0;
+  int freq_switch_ncycles = 0;
+  bit dyn_clk_switch = '0;
+  bit rv_tester_reset_d1 = '0;
+
   if (EXTERNAL_CLOCK) begin
-    assign clk[TB_CLK_IDX] = clk_ext[TB_CLK_IDX];
-    for (genvar c = 1; c < NCLKS; c++) begin
-      assign clk[c] = force_ref_clk_d2 ? clk_ext[REF_CLK_IDX] : clk_ext[c];
+    for (genvar c = 0; c < NCLKS; c++) begin
+      assign clk[c] = clk_ext[c];
     end
   end else begin
-    for (genvar c = 0; c < NCLKS; c++) begin
-`ifdef CLK_MUX_UNSUPPORTED
-      rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(clk[c]), .fastest_clk(fastest_clk));
-
-`else
-      if(c == REF_CLK_IDX) begin
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLOCK_FREQ_MHZ[REF_CLK_IDX]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(clk[REF_CLK_IDX]), .fastest_clk(fastest_clk));
-      end else if (c == TB_CLK_IDX ) begin
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLOCK_FREQ_MHZ[TB_CLK_IDX]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(clk[TB_CLK_IDX]), .fastest_clk(fastest_clk));
-      end else begin
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(def_clk[c]), .fastest_clk(fastest_clk));
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(PROFILE1_CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) profile1_clkgen(.clk(profile1_clk[c]), .fastest_clk(fastest_clk));
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(PROFILE2_CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) profile2_clkgen(.clk(profile2_clk[c]), .fastest_clk(fastest_clk));
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(PROFILE3_CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) profile3_clkgen(.clk(profile3_clk[c]), .fastest_clk(fastest_clk));
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(PROFILE4_CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) profile4_clkgen(.clk(profile4_clk[c]), .fastest_clk(fastest_clk));
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(PROFILE5_CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) profile5_clkgen(.clk(profile5_clk[c]), .fastest_clk(fastest_clk));
-        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(PROFILE6_CLOCK_FREQ_MHZ[c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) profile6_clkgen(.clk(profile6_clk[c]), .fastest_clk(fastest_clk));
-
-
-        rv_tester_clk_mux #(.NUM_INPUTS(7)) i_clk_mux (
-            .clks_i      ({profile6_clk[c], profile5_clk[c], profile4_clk[c],
-                           profile3_clk[c], profile2_clk[c], profile1_clk[c], def_clk[c]}),
-            .async_sel_i (clock_mode),
-            .clk_o       (clk[c])
-        );
+    for (genvar c = 0; c < NCLKS; c++) begin : g_clk
+      if (NUM_CLK_PROFILES == 0 || c == TB_CLK_IDX || c == REF_CLK_IDX) begin : g_fixed
+        rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLK_PROFILE_FREQ_MHZ[0][c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(clk[c]), .fastest_clk(fastest_clk));
+      end else begin : g_muxed
+        for (genvar m = 0; m < NUM_CLK_MODES; m++) begin : g_mode
+          rv_tester_clkgen #(.CLOCK_FREQ_MHZ(CLK_PROFILE_FREQ_MHZ[m][c]), .FASTEST_FREQ_MHZ(max_clock_freq_overall)) clkgen(.clk(mode_clk[c][m]), .fastest_clk(fastest_clk));
+        end
+        assign clk[c] = mode_clk[c][clock_mode];
       end
-`endif
     end
   end
 
-  //import "DPI-C" function void rv_tester_streaming_dpi_init();
+  always_comb begin
+    clock_mode_next = clock_mode;
+    if (rv_tester_reset || rv_tester_reset_d1 || !dyn_clk_switch) begin
+      clock_mode_next = CLK_MODE_W'(clk_profile);
+    end else if (clocks > 10 && freq_switch_ncycles != 0 && (clocks % longint'(freq_switch_ncycles)) == 0) begin
+      clock_mode_next = (clock_mode == CLK_MODE_W'(NUM_CLK_PROFILES)) ? CLK_MODE_W'(1) : clock_mode + 1'b1;
+    end
+  end
+
+  always @(posedge dut_clk[TB_CLK_IDX]) begin
+    rv_tester_reset_d1 <= rv_tester_reset;
+    clock_mode         <= clock_mode_next;
+    if (clock_mode_next != clock_mode) begin
+      $display("<%0d> rv_tester: clock_mode %0d -> %0d", clocks, clock_mode, clock_mode_next);
+    end
+  end
+
   import "DPI-C" function void rv_tester_streaming_dpi_shutdown();
   import "DPI-C" function int rv_tester_init(); // dummy return value so that this gets called immediately. need this to happen before any other DPIs are called.
   import "DPI-C" function void rv_tester_set_seed();
@@ -124,6 +113,8 @@ module rv_tester
   import "DPI-C" context function bit rv_tester_flush_callbacks();
   import "DPI-C" context function bit rv_tester_perf_calc(int init, int reset_done, int term, LU clocks);
   import "DPI-C" context function void rv_tester_clock_monitor(LU clocks, int unsigned clock_mode);
+  // Captures this scope and installs the TB cycle counter on the EAM.
+  import "DPI-C" context function void eam_register_scope();
 
   localparam int unsigned MaxInFlightReadReq = topology.TOP.PLATFORM.MAX_IN_FLIGHT_READ_REQ;
   localparam int unsigned MaxBeatsPerBurst = topology.TOP.PLATFORM.MAX_BEATS_PER_BURST;
@@ -148,7 +139,6 @@ module rv_tester
   int perf_period = 0;
   int debug_enable = 0;
   bit cb_poll = '0;
-  bit dyn_clk_switch = '0;
   bit cb_success = '1;
   logic call_finish;
   int num_reruns = -1;
@@ -169,11 +159,10 @@ module rv_tester
   logic cvm_done_drained;
   logic terminated_1T = '0;
   logic rerun_now;
-  /* verilator lint_off UNOPTFLAT */
   rv_tester_pkg::terminate_t rv_tester_error_terminate;
-  /* verilator lint_off UNOPTFLAT */
   rv_tester_pkg::terminate_t cosim_terminate [NHARTS-1:0];
   logic cosim_terminate_any;
+  logic sysmod_cosim_dmi_terminate;
   longint unsigned instructions = 0;
 
   int quiesce_counter = 0;
@@ -183,9 +172,6 @@ module rv_tester
   int ndmreset_ack_delay = 0;
 
   int trace_timeout;
-  int freq_switch_ncycles;
-  int clk_profile = 0;
-
   int assertion_test_cycle = 0;
 
   logic streaming_dpi_shutdowned = 0;
@@ -200,7 +186,6 @@ module rv_tester
   int unsigned cvm_verbosity, cvm_debug_verbosity, curr_cvm_verbosity;
   LU cvm_debug_cycle_on = '0;
   LU cvm_debug_cycle_off = '0;
-  //logic dut_terminate_any;
 
   bit rv_tester_reset_dut_clk;
   bit rv_tester_reset_core_clk_d1;
@@ -208,13 +193,8 @@ module rv_tester
   bit rv_tester_reset_core_clk_d3;
   logic rv_tester_streaming_dpi_init;
   bit rv_tester_dpi_init_done;
-  
-  // Termination condition variables for better readability
-  logic sysmod_cosim_dmi_terminate;
 
   reg [49:0] dut_reset_req_shift_reg;
-
-  logic rerun_now_ff;
 
   always @(posedge dut_clk[AXI_CLK_IDX] or posedge cold_reset) begin
     /* verilator lint_off SYNCASYNCNET */
@@ -245,28 +225,6 @@ module rv_tester
   // Assert `cvm_done_drained` CVM_DONE_DRAINED_DELAY_CYCLES TB clk cycles after `cvm_done`.
   assign cvm_done_drained = cvm_done_drained_delay_sr[CVM_DONE_DRAINED_DELAY_CYCLES-1];
 
-`ifndef CLK_MUX_UNSUPPORTED
-  always @(posedge dut_clk[TB_CLK_IDX])begin
-    if (rv_tester_reset & !rerun_now_ff)begin
-      clock_mode <= clk_profile[2:0];
-      rv_tester_clock_monitor(clocks, {29'b0, clk_profile[2:0]});
-    end
-    /* verilator lint_off WIDTH */
-    else if(dyn_clk_switch & (clocks >10) &  (freq_switch_ncycles != 0 && (clocks % freq_switch_ncycles) == 0)) begin
-      //dynamically select clk from available profiles
-      //this logic will generate the select pins of the mux ,which will switch between clks
-      if(clock_mode == 'b110) begin
-        clock_mode <= 'b1;
-        rv_tester_clock_monitor(clocks, 'b1);
-      end else begin
-        clock_mode <= clock_mode + 1'b1;
-        rv_tester_clock_monitor(clocks, {29'b0, clock_mode + 1'b1});
-      end
-    end
-    /* verilator lint_on WIDTH */
-  end
-`endif
-
   /*
    * Don't put an DPI calls here, zebu gets confused when signals are driven
    * in the same block as zDPI and leads to weird bugs. Eg, triggers on
@@ -276,9 +234,7 @@ module rv_tester
   always @(posedge dut_clk[TB_CLK_IDX]) begin
 
     rv_tester_reset <= rerun_now;
-    rerun_now_ff <= rerun_now;
     clocks          <= clocks + 1;
-
 
 `ifndef NO_TIMESTAMP
     current_time <= $time;
@@ -303,25 +259,6 @@ module rv_tester
     end
   end
 
-  always @(posedge dut_clk[TB_CLK_IDX]) begin
-    if (!rv_tester_reset && cvm_debug_cycle_off > 0) begin
-      if (curr_cvm_verbosity != cvm_debug_verbosity && clocks >= cvm_debug_cycle_on && clocks <= cvm_debug_cycle_off) begin
-        cvm_logger::set_verbosity(cvm_debug_verbosity);
-        curr_cvm_verbosity <= cvm_debug_verbosity;
-      end else if (curr_cvm_verbosity != cvm_verbosity && clocks >= cvm_debug_cycle_off) begin
-        cvm_logger::set_verbosity(cvm_verbosity);
-        curr_cvm_verbosity <= cvm_verbosity;
-      end
-    end
-  end
-
-
-  always @(posedge dut_clk[TB_CLK_IDX]) begin
-    if(rerun_now) begin
-      $display("<%0d> [RVTESTER]: rerunning test %0d time(s)", clocks, num_reruns);
-    end
-  end
-
   /*
    * Group all zebu zDPI DPIs here
    * These are run on a separate thread than the slower zebi3
@@ -329,10 +266,6 @@ module rv_tester
   always @(posedge dut_clk[TB_CLK_IDX]) begin
     if (rv_tester_reset) begin
       streaming_dpi_shutdowned <= 0;
-
-      // Used for offine DPI
-      //rv_tester_streaming_dpi_init();
-      //rv_tester_reset_dut_clk <= 1'b1;
     end
     if (terminated && !streaming_dpi_shutdowned) begin
       // Used for zebu offline DPI to shutdown the registry
@@ -415,9 +348,11 @@ module rv_tester
 
     automatic int _, _cvm_verbosity, _gen_clocks_verbosity, _gen_timestamp_verbosity;
 
+    if(rerun_now) begin
+      $display("<%0d> [RVTESTER]: rerunning test %0d time(s)", clocks, num_reruns);
+    end
     if (rv_tester_reset || rvt_reload) begin
-      if (rv_tester_reset || (rvt_reload && $test$plusargs("whisper_loadfrom")))
-      begin
+      if (rv_tester_reset || (rvt_reload && $test$plusargs("whisper_loadfrom"))) begin
         $display("[RVTESTER]: new test");
         _ = rv_tester_init();
         /* RVDE-31919 CVM_REGISTRY_SET_SCOPE
@@ -433,7 +368,6 @@ module rv_tester
         rv_tester_error_terminate.terminate = '0;
         /* verilator lint_on BLKSEQ */
   
-  
         if (rv_tester_reset) begin
           if(num_builds < 0) begin
             $display("[RVTESTER]: constructing Full registry");
@@ -443,6 +377,7 @@ module rv_tester
             $display("[RVTESTER]: constructing registry for domain:0 (without DM Model and others)");
             rv_tester_domain0_build_registry();
           end
+          eam_register_scope();
         end
         rv_tester_parse_memmap(NoAddrRules, 0, 0, 0, topology.TOP.PLATFORM.AXI_SW[AXI_IDX].ADDR_WIDTH, topology.TOP.PLATFORM.AXI_SW[AXI_IDX].DATA_WIDTH);
   
@@ -455,8 +390,6 @@ module rv_tester
         perf_period                 = cvm_plusargs::get_int("perf_period");
         /* verilator lint_on BLKSEQ */
   
-  
-        // Resolved by eot during rv_tester_build_registry above.
         eot_addr                        <= cvm_plusargs::get_ulongint("tohost");
         eot_status                      <= 1;
         eot_syscall                     <= 0;
@@ -473,7 +406,6 @@ module rv_tester
         gen_timestamp                   <= _cvm_verbosity >= _gen_timestamp_verbosity;
         assertion_test_cycle            <= cvm_plusargs::get_int("assertion_test_cycle");
         overlay_mmr_en                  <= cvm_plusargs::get_bool("overlay_mmr_en") != '0;
-        perf_count                      <= '0;
   
         cvm_verbosity        <= _cvm_verbosity;
         curr_cvm_verbosity   <= _cvm_verbosity;
@@ -482,7 +414,15 @@ module rv_tester
         cvm_debug_cycle_off  <= cvm_plusargs::get_ulongint("cvm_debug_cycle_off");
       end
     end
-    if (!dyn_clk_switch) clock_mode <= clk_profile[2:0];
+    else if (cvm_debug_cycle_off > 0) begin
+      if (curr_cvm_verbosity != cvm_debug_verbosity && clocks >= cvm_debug_cycle_on && clocks <= cvm_debug_cycle_off) begin
+        cvm_logger::set_verbosity(cvm_debug_verbosity);
+        curr_cvm_verbosity <= cvm_debug_verbosity;
+      end else if (curr_cvm_verbosity != cvm_verbosity && clocks >= cvm_debug_cycle_off) begin
+        cvm_logger::set_verbosity(cvm_verbosity);
+        curr_cvm_verbosity <= cvm_verbosity;
+      end
+    end
     num_reruns      <= num_reruns - int'(rerun_now);
     if (num_reruns < 0) begin
       num_reruns  <= cvm_plusargs::get_int("num_reruns");
@@ -490,8 +430,8 @@ module rv_tester
 
     rvt_reload_d2 <= rvt_reload_d1;
     rvt_reload_d1 <= rvt_reload;
-
   end
+
 
   /*
    * rv_tester_shutdown_registry could be called at the same time as
@@ -638,12 +578,6 @@ end
     soc_clocks <= soc_clocks + 1;
   end
 
-  // force_ref_clk resynchronised to REF_CLK for the external-clock mux
-  always @(posedge dut_clk[REF_CLK_IDX]) begin
-    force_ref_clk_d1 <= force_ref_clk;
-    force_ref_clk_d2 <= force_ref_clk_d1;
-  end
-
   // Reset is held at the end of a run so the DPIs quiesce. The harness owns the
   // per-clock-domain dut_reset[] composition; rv_tester only publishes
   // warm_reset_pullup so the harness can extend the hold until pwrmgmt asserts
@@ -737,18 +671,6 @@ end
     rv_tester_error_terminate.terminate = '1;
   endfunction
   export "DPI-C" function rv_tester_terminate;
-
-  /* RVDE-27024
-   * function void rv_tester_set_clock_mode (input int unsigned new_clock_mode);
-   *     if (new_clock_mode <= 3'b110) begin
-   *         clock_mode <= new_clock_mode[2:0];
-   *         $display("<%0d> rv_tester_set_clock_mode: clock_mode changed to %0d", clocks, new_clock_mode);
-   *     end else begin
-   *         $display("<%0d> rv_tester_set_clock_mode: Invalid clock_mode %0d, valid range is 0-6", clocks, new_clock_mode);
-   *     end
-   * endfunction
-   * export "DPI-C" function rv_tester_set_clock_mode;
-   */
 
   `RV_TESTER_TRANSACTIONS_DOMAIN(1, dut_clk[CORE_CLK_IDX]);
   `RV_TESTER_TRANSACTIONS_DOMAIN(2, dut_clk[AXI_CLK_IDX]);
@@ -1019,6 +941,13 @@ end
 
   endfunction
   export "DPI-C" function rv_tester_set_address_map;
+
+  // Read-only accessor for the TB cycle counter. Called from C++ (EAM) only on
+  // exclusive (locked) AXI transactions, so it costs nothing per clock.
+  function automatic longint unsigned rv_tester_get_clocks();
+    return clocks;
+  endfunction
+  export "DPI-C" function rv_tester_get_clocks;
 
   always @(posedge dut_clk[TB_CLK_IDX]) begin
     assert(assertion_test_cycle == '0 || clocks != 64'(assertion_test_cycle)) else $error("assertion test");

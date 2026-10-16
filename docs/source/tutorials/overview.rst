@@ -53,9 +53,9 @@ The main components are:
 - **Sysmod** — System model that divides the address space per the memory map and routes
   requests to device models.
 - **Devices (CLINT, TRICKBOX, HTIF, DM, ...)** — Model device-specific functionality.
-- **Clocking & reset** — Per-domain clock generation, optional glitch-free clock-profile muxing
-  for dynamic frequency switching, external-clock support, and cold/warm reset sequencing across
-  clock domains.
+- **Clocking & reset** — Per-domain clock generation with clock-profile muxing driven by a
+  platform-supplied frequency table (``NUM_CLK_PROFILES``, ``CLK_PROFILE_FREQ_MHZ``),
+  external-clock support, and cold/warm reset sequencing across clock domains.
 - **Lifecycle & DPI bring-up** — Parses plusargs, seeds randomization, builds and tears down the
   C++ object registry, and orders DPI initialization against reset so the C++ side is ready
   before the core leaves reset.

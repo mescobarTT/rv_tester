@@ -62,6 +62,8 @@ DEFINE_uint32(derr_interrupt_num_default, 23, "DERR interrupt default number");
 DEFINE_string(hart_mhartid, "",
               "mhartid of each hart, in +hart_enable_id order. Ex: 0,8. Hart i then runs on the whisper hart "
               "with index hart_mhartid[i], whose MHARTID is that value. Empty: hart i runs on whisper hart i.");
+DEFINE_uint64(wfi_timeout_standalone, 0, "Standalone whisper wfi timeout in cycles");
+DEFINE_bool(mtip_standalone, false, "Enable MTIP in standalone whisper");
 #include "iss_utils.h"
 
 extern void (*__tracerExtension)(void*);
@@ -191,6 +193,7 @@ void whisperClient<URV>::configure() {
   cvm::registry::messenger.procedure<whisperSnapshotSaveRPC>(loc_, [this]() { return this->whisperSnapshotSave(); });
   cvm::registry::messenger.procedure<whisperSetAmoAllowRPC>(loc_, [this](int hart, bool allowNonCacheable, bool allowIo, bool& valid) { return this->whisperSetAmoAllow(hart, allowNonCacheable, allowIo, valid); });
   cvm::registry::messenger.procedure<whisperSetClearTinstLrScRPC>(loc_, [this](int hart, bool enable, bool& valid) { return this->whisperSetClearTinstLrSc(hart, enable, valid); });
+  cvm::registry::messenger.procedure<whisperEnablePmaMasksRPC>(loc_, [this](int hart, bool enable, bool& valid) { return this->whisperEnablePmaMasks(hart, enable, valid); });
   cvm::registry::messenger.procedure<whisperMcmSkipReadDataCheckRPC>(loc_, [this](uint64_t addr, unsigned size, bool enable) { return this->whisperMcmSkipReadDataCheck(addr, size, enable); });
 }
 
@@ -1289,8 +1292,11 @@ whisperClient<URV>::overrideWhisperJson(bool standalone) {
     return "";
   }
 
-  if (standalone)
-    j["wfi_timeout"] = 0;
+  if (standalone) {
+    j["wfi_timeout"] = FLAGS_wfi_timeout_standalone;
+    if (FLAGS_mtip_standalone)
+      j["enable_mtip"] = true;
+  }
 
   if (!standalone)
     j["auto_increment_timer"] = FLAGS_whisper_auto_increment_timer;
@@ -1338,6 +1344,11 @@ bool whisperClient<URV>::whisperSetAmoAllow(int hart, bool allowNonCacheable, bo
 template <typename URV>
 bool whisperClient<URV>::whisperSetClearTinstLrSc(int hart, bool enable, bool& valid) {
   return whisperPoke(hart, 0, 's', WhisperSpecialResource::ClearTinstLrSc, enable, false, false, valid);
+}
+
+template <typename URV>
+bool whisperClient<URV>::whisperEnablePmaMasks(int hart, bool enable, bool& valid) {
+  return whisperPoke(hart, 0, 's', WhisperSpecialResource::EnablePmamasks, enable, false, false, valid);
 }
 
 template class whisperClient<uint32_t>;
