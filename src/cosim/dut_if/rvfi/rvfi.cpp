@@ -999,6 +999,9 @@ void rvfi::process(const rv_tester_transactions::cosim::m_csri<>& m_csri) {
 }
 
 void rvfi::process(const rv_tester_transactions::cosim::m_mhpm_counter_ovf<>& m_mhpm_counter_ovf) {
+  if (!FLAGS_cosim)
+    return;
+
   if (terminated_ || in_reset_)
     return;
 
