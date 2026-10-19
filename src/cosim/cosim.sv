@@ -1692,20 +1692,20 @@ end
           end else if (cycles_since_retire > max_stall_cycle) begin
 `ifndef COMPLEX_STRING_OPERATIONS_UNSUPPORTED
             automatic string pc = get_stall_probable_cause();
-            $display("\nError: Hart %0d: No instruction retired for max_stall_cycle (%0d) cycles. %s", NUM, max_stall_cycle, pc);
 `else
-            $display("\nError: Hart %0d: No instruction retired for max_stall_cycle (%0d) cycles.", NUM, max_stall_cycle);
+            automatic string pc = "";
 `endif
+            $display("\nError: Hart %0d: No instruction retired for max_stall_cycle (%0d) cycles. %s", NUM, max_stall_cycle, pc);
             cosim_terminate();
             cosim_terminate_sent <= 1'b1;
           end
         end else if (!timeout_scale_en && max_stall_cycle_timeout_detect && cosim_terminate_sent == '0) begin
 `ifndef COMPLEX_STRING_OPERATIONS_UNSUPPORTED
           automatic string pc = get_stall_probable_cause();
-          $display("\nError: Hart %0d: No instruction retired for max_stall_cycle (%0d) cycles. %s", NUM, max_stall_cycle, pc);
 `else
-          $display("\nError: Hart %0d: No instruction retired for max_stall_cycle (%0d) cycles.", NUM, max_stall_cycle);
+          automatic string pc = "";
 `endif
+          $display("\nError: Hart %0d: No instruction retired for max_stall_cycle (%0d) cycles. %s", NUM, max_stall_cycle, pc);
           cosim_terminate();
           cosim_terminate_sent <= 1'b1;
         end
