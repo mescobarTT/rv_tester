@@ -57,10 +57,7 @@ module sysmod
   logic [NHARTS-1:0] debug_req_vld_d = '0;
   logic [NHARTS-1:0] debug_req_vld_q;
   int unsigned debug_req_hold_cnt [NHARTS-1:0] = '{default: 0};
-  // sysmod_debug_req_vld only records a request (value plus a bumped sequence
-  // number); the clocked block below is the single writer of debug_req_vld_d and
-  // debug_req_hold_cnt, because emulator synthesis rejects a variable driven from
-  // several processes ("multiple drivers which are not all tristate").
+  // extra variables to work around emulator synthesis requirement for only one driver for a clocked variable
   bit          debug_req_set_val  [NHARTS-1:0] = '{default: 0};
   int unsigned debug_req_set_seq  [NHARTS-1:0] = '{default: 0};
   int unsigned debug_req_set_seen [NHARTS-1:0] = '{default: 0};
@@ -199,6 +196,8 @@ module sysmod
       interrupt_q[h].mtime <= aclint_mtime;
     end
 
+    // Emulator synthesis requires a single driver for a clocked variable: requests from
+    // sysmod_debug_req_vld are applied here, not written to debug_req_vld_d/hold_cnt in place.
     /* verilator lint_off BLKSEQ */
     for (int h = 0; h < NHARTS; h++) begin
       if (reset) begin
