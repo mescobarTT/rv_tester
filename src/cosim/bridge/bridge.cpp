@@ -79,7 +79,6 @@ DEFINE_bool(delay_satp_update, false, "Delay satp update till next sfence.vma");
 DEFINE_bool(cov, false, "Enable Arch coverage");
 DEFINE_string(archsample_lib_path, "", "Path to libarchsample.so");
 DEFINE_bool(standalone, true, "Enable whisper standalone run at beginning of sim");
-DEFINE_bool(metrics, true, "Enable printing metrics in log file");
 DEFINE_bool(csr_metrics, true, "Print the per-hart iss/dut CSR pass-metrics even when the run had no cosim mismatch; set 0 to print them only on a mismatch");
 DEFINE_uint32(max_nmi_resynch_age, 4, "Max age for a pending NMI to be deferred from poking to whisper esp. for newly asserted NMI which DUT is yet to acknowledge");
 DEFINE_uint32(max_pend_intr_age, 256, "Number of instructions allowed to retire before a pending interrupt should be taken");
@@ -692,7 +691,9 @@ void bridge::process_dut_instr_retire(hart_id_t hart, rv_instr_t& d) {
   // Update cac with whisper state
   if (!psc_stepping_) {
     if (patch_mode_ == NO_PATCH || patch_mode_ == EXIT_PATCH) {
-      update_whisper_state(hart, w, d.comp, d.mem_read.page4kX, d.opcode_modified);
+      bool dut_mem_pa_valid = d.mem_write.valid || d.mem_read.valid;
+      uint64_t dut_mem_pa = d.mem_write.valid ? d.mem_write.pa : d.mem_read.pa;
+      update_whisper_state(hart, w, d.comp, d.mem_read.page4kX, d.opcode_modified, dut_mem_pa, dut_mem_pa_valid);
     }
 
     // Update cac with dut state
@@ -1205,14 +1206,21 @@ void bridge::pre_step_interrupt_process(hart_id_t hart, const rv_instr_t& d) {
 
   // If DUT takes interrupt, then undefer all interrupts
   // Exception: If Interrupts asserted during ucode sequence then do not undefer those interrupts as they are not yet visible to RTL.
+  // Interrupts raised in Whisper after the last DUT retire were not visible when the DUT selected
+  // this interrupt, so they stay deferred for this step in the same way as the ucode window.
   if (d.intr) {
     uint64_t dut_intr_bit = d.icause + (d.virt_mode ? 1 : 0);
     intr_during_ucode_.reset(dut_intr_bit);
-    defer_interrupt(hart, d.cycle, 0 | intr_during_ucode_.to_ullong());
-    if (intr_during_ucode_.to_ullong() != 0)
+    std::bitset<64> keep_deferred = intr_during_ucode_ | mip_changed_since_last_step_;
+    keep_deferred.reset(dut_intr_bit);
+    mip_changed_since_last_step_.reset();
+    if (w_intr && (w_cause != dut_intr_bit) && keep_deferred.test(w_cause))
+      bridge_log(cvm::MEDIUM, "<{}> Whisper cause {} raised after last retire, deferred for DUT cause {}\n", d.cycle, intr_name(w_cause), intr_name(dut_intr_bit));
+    defer_interrupt(hart, d.cycle, 0 | keep_deferred.to_ullong());
+    if (keep_deferred.to_ullong() != 0)
       intr_partially_deferred_ = true;
     for (auto it = deferred_intr_age_.begin(); it != deferred_intr_age_.end();) {
-      if (!intr_during_ucode_.test(it->first))
+      if (!keep_deferred.test(it->first))
         deferred_intr_age_.erase(it++);
       else
         it++;
@@ -1478,7 +1486,9 @@ void bridge::post_step_exception_check(hart_id_t hart, const rv_instr_t& d, whis
 
   step(hart, w);
   bridge_log(cvm::MEDIUM, "<{}> Whisper Step #{}: Extra step due to exception\n", w.time, step_);
-  update_whisper_state(hart, w, d.comp, d.mem_read.page4kX, d.opcode_modified);
+  bool dut_mem_pa_valid = d.mem_write.valid || d.mem_read.valid;
+  uint64_t dut_mem_pa = d.mem_write.valid ? d.mem_write.pa : d.mem_read.pa;
+  update_whisper_state(hart, w, d.comp, d.mem_read.page4kX, d.opcode_modified, dut_mem_pa, dut_mem_pa_valid);
 }
 
 bool bridge::is_custom_excp(uint64_t cause) {
@@ -1525,7 +1535,7 @@ void bridge::post_step_satp_write_poke(hart_id_t hart, const rv_instr_t& d, cons
   }
 }
 
-void bridge::update_whisper_state(hart_id_t hart, whisper_state_t& w, bool dut_is_compressed, bool page4kX, bool dut_opcode_modified) {
+void bridge::update_whisper_state(hart_id_t hart, whisper_state_t& w, bool dut_is_compressed, bool page4kX, bool dut_opcode_modified, uint64_t dut_mem_pa, bool dut_mem_pa_valid) {
 
   w_.valid = true;
   w_.cycle = w.time;
@@ -1543,11 +1553,10 @@ void bridge::update_whisper_state(hart_id_t hart, whisper_state_t& w, bool dut_i
   if (((w.opcode & 0x7fff) == 0x200f) && (((w.opcode >> 20) & 0xfff) <= 2)) { // cbo - inval, clean , flush
     zicbom_ = true;
     if (!FLAGS_mcm && (w.opcode >> 20 == 0)) { // cbo.inval and no mcm RVDE-18801
-      uint64_t addr;
-      if (!cvm::registry::messenger.call<whisperClient<uint64_t>::whisperPeekGprRPC>(cvm::topology::get_from_hierarchy("TOP.PLATFORM.WHISPER_CLIENT", 0), hart, (w.opcode >> 15) & 0x1f, addr)) {
-        error("Hart {}: Failed to peek GPR {}\n", hart, (w.opcode >> 15) & 0x1f);
-      }
-      cvm::registry::messenger.signal<cbo_inval_nomcm_s>(cvm::topology::get_from_hierarchy("TOP.PLATFORM.SYSMOD", 0), cbo_inval_nomcm_s(addr));
+      if (dut_mem_pa_valid)
+        cvm::registry::messenger.signal<cbo_inval_nomcm_s>(cvm::topology::get_from_hierarchy("TOP.PLATFORM.SYSMOD", 0), cbo_inval_nomcm_s(dut_mem_pa));
+      else
+        error("cbo.inval with mem_write.valid == 0, RVFI physical address not available\n");
     }
   }
 
@@ -2888,6 +2897,21 @@ void bridge::process_dut_interrupt(hart_id_t hart, rv_intr_t& i) {
     poke_non_standard_interrupt(hart, i.cycle, non_std_intr, i.intr_during_ucode);
   // ================================================================================================================
 
+  // A software clear of LCOFIP retiring inside the counter-overflow propagation
+  // window is stepped in Whisper before the delayed OF poke re-asserts the bit
+  // there, while the DUT applied the hardware set first. Whisper follows the DUT.
+  if (!i.hw && i.mip_clr[LCOFI]) {
+    peek_mip(hart, i.cycle, tmp_mip_prev_);
+    if (tmp_mip_prev_[LCOFI]) {
+      bridge_log(cvm::MEDIUM, "<{}> LCOFI SW clear ordered after delayed OF poke, clearing in Whisper: mip={}\n", i.cycle, to_string(i));
+      tmp_mip_latest_ = tmp_mip_prev_;
+      tmp_mip_latest_.reset(LCOFI);
+      poke_mip(hart, i.cycle, tmp_mip_latest_);
+      check_mip_change(tmp_mip_prev_, tmp_mip_latest_);
+      check_and_defer_interrupt(hart, i.cycle, tmp_mip_latest_, i.intr_during_ucode);
+    }
+  }
+
   // Handling needed only for hw interrupts
   if (!i.hw)
     return;
@@ -3076,7 +3100,10 @@ void bridge::check_mip_change(std::bitset<64>& mip_prev, std::bitset<64> mip_new
     start++;
     bits_clr >>= 1;
   }
+  // The SEIP pin is outside the mip register peek, so its toggle is recorded here
   if (consider_seip) {
+    if (seip_new != seip_prev)
+      mip_changed_since_last_step_.set(SEI);
     if (seip_new == seip_prev) {
       whisper_mip_age_.erase(SEI);
       whisper_mip_clr_age_.erase(SEI);

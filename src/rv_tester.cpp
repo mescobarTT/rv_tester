@@ -19,6 +19,8 @@
 #include <fmt/format.h>
 #include "eot_plusargs.h"
 #include "pmu/pmu_plusargs.h"
+#include "src/transactors/axi_sw/eam.hpp"
+#include "svdpi.h"
 
 static bool validate_ge0(const char* flagname, const int value) {
   if (value < 0) {
@@ -72,6 +74,23 @@ static bool validate_debug_cycle_off(const char* flagname, const uint64_t value)
 
 extern "C" void rv_tester_terminate();
 extern "C" void rv_tester_set_address_map(std::uint32_t i, std::uint64_t start_addr, std::uint64_t end_addr, std::uint32_t device);
+// DPI export from rv_tester.sv. Referenced here so the AXI library does not
+// carry an undefined symbol into testbenches that omit rv_tester.
+extern "C" std::uint64_t rv_tester_get_clocks();
+
+namespace {
+svScope eam_rv_tester_scope = nullptr;
+
+std::uint64_t read_rv_tester_cycles() {
+  if (eam_rv_tester_scope == nullptr)
+    return 0;
+  const svScope prev = svSetScope(eam_rv_tester_scope);
+  const std::uint64_t now = rv_tester_get_clocks();
+  if (prev != nullptr)
+    svSetScope(prev);
+  return now;
+}
+} // namespace
 
 static bool check_called;
 class logger_instrument {
@@ -118,6 +137,11 @@ private:
 };
 
 extern "C" {
+
+void eam_register_scope() {
+  eam_rv_tester_scope = svGetScope();
+  eam::instance().set_cycle_source(read_rv_tester_cycles);
+}
 
 void dpi_rv_tester_keeper_send_data(svBit data) {
   cvm::log(cvm::LOW, "[RVFI] keeper send data = {}\n", data);
@@ -199,6 +223,13 @@ int rv_tester_init() {
   rv_tester_install_crash_handlers();
   cvm::log(cvm::NONE, "[plusargs] Parsing...\n");
   cvm::plusargs::parse();
+
+  auto num_clk_profiles = cvm::topology::attr(cvm::topology::get_from_type("CLKI", 0), "NUM_CLK_PROFILES");
+  int max_clk_profile = num_clk_profiles.first ? static_cast<int>(num_clk_profiles.second) : 0;
+  if (FLAGS_clk_profile < 0 || FLAGS_clk_profile > max_clk_profile) {
+    cvm::log(cvm::MEDIUM, "INFO: +clk_profile={} outside 0..{}, using 0\n", FLAGS_clk_profile, max_clk_profile);
+    FLAGS_clk_profile = 0;
+  }
   return 0;
 }
 

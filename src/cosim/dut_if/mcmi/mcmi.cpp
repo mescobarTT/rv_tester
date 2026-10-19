@@ -437,19 +437,20 @@ void mcmi::process(const rv_tester_transactions::cosim::m_mcmi_ifetch_resp<>& m_
   // RVDE-17736: Manage fetch/evict signaling for ncio region
   if (is_ncio(m.attr)) {
     auto it = std::find_if(ncio_fetches_.begin(), ncio_fetches_.end(), [&](const mem_t& fetch) { return fetch.pa == m.pa; });
-    bool active = std::find_if(active_ncio_fetches_.begin(), active_ncio_fetches_.end(), [&](const mem_t& fetch) { return fetch.pa == m.pa; }) != active_ncio_fetches_.end();
     if (it == ncio_fetches_.end()) {
       // First fetch of this ncio line.
       bridge_->process_dut_mcm_ifetch(m_mcmi_ifetch_resp.hart, m);
       ncio_fetches_.emplace_back(m);
-    } else if (!active) {
-      // Re-fetch in a new window: ncio bytes are volatile, so evict whisper's stale
-      // snapshot and re-read the current bytes instead of reusing the pa-dedup entry.
+    } else {
+      // Re-snapshot on every ncio re-fetch to observe stores drained mid-window (SMC).
       process(rv_tester_transactions::cosim::m_mcmi_ievict<>(loc_, m.cycle, m_mcmi_ifetch_resp.hart, it->pa));
       bridge_->process_dut_mcm_ifetch(m_mcmi_ifetch_resp.hart, m);
     }
     active_ncio_fetches_.emplace_back(m);
   } else {
+    // Non-coherent I$ evicts silently; drop whisper's copy so the refill re-reads memory.
+    if (is_noncoherent_icache(m.attr))
+      process(rv_tester_transactions::cosim::m_mcmi_ievict<>(loc_, m.cycle, m_mcmi_ifetch_resp.hart, m.pa));
     bridge_->process_dut_mcm_ifetch(m_mcmi_ifetch_resp.hart, m);
     if (!ncio_fetches_.empty()) {
       ncio_mem_transition_ = true;
@@ -610,6 +611,10 @@ bool mcmi::debug_fetch_access(uint64_t addr) {
 
 bool mcmi::is_ncio(uint32_t mem_attr) {
   return ((mem_attr & 0x800) != 0) || ((mem_attr & 0x1000) == 0);
+}
+
+bool mcmi::is_noncoherent_icache(uint32_t mem_attr) {
+  return (mem_attr & 0x80000000) != 0;
 }
 
 bool mcmi::check_axi_error(uint64_t addr) {
