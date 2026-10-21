@@ -23,6 +23,12 @@ DEFINE_uint32(fsim_rg_aw_size_gt8_every, 0, "fault-sim only: every Nth rerouted 
 
 namespace {
 
+// Fault-sim >8B injection: AxSIZE=4 (16B, size[2]=1) issued at a 16B-aligned
+// address. The PMSS AXI switch transaction checker DECERRs unaligned accesses
+// ahead of the ring, so an unaligned upsized beat never reaches the SC/SCB slave.
+constexpr uint8_t upsized_axsize = 4;
+constexpr uint64_t upsized_align_mask = ~uint64_t((uint64_t(1) << upsized_axsize) - 1);
+
 bool is_hardware_axi_source(cvm::topology::loc_t source) {
   static const auto sources = [] {
     std::vector<cvm::topology::loc_t> locs;
@@ -152,9 +158,11 @@ cvm::messenger::task<std::uint8_t> mmr_txn_router::read(const read_t& dr, data_t
   // and returns NDERR, so tolerate the error response; the DUT load fault is stepped
   // over by the test's mtvec skip handler.
   if (size_gt8_every_ && (++read_count_ % size_gt8_every_) == 0) {
-    ar.size = 4; // 16B -> AxSIZE[2]=1
+    ar.addr &= upsized_align_mask;
+    ar.size = upsized_axsize;
     ar.allow_decerr_resp = true;
-    cvm::log(cvm::HIGH, "[mmr_txn_router] size[2] injection: upsized read addr={:#x} to AxSIZE=16B\n", addr);
+    cvm::log(cvm::HIGH, "[mmr_txn_router] size[2] injection: upsized read addr={:#x} to AxSIZE=16B at {:#x}\n", addr,
+             ar.addr);
   }
 
   axi::id_t axi_id;
@@ -208,8 +216,10 @@ cvm::messenger::task<std::uint8_t> mmr_txn_router::write(const transactor::write
   // aw.size[2] lane is exercised. The SC/SCB MMR slave rejects >8B (scb_mmr.sv:258)
   // and returns NDERR on the B channel, tolerated via req.allow_decerr_resp above.
   if (aw_size_gt8_every_ && (++aw_size_count_ % aw_size_gt8_every_) == 0) {
-    req.size_override = 4; // 16B -> AxSIZE[2]=1
-    cvm::log(cvm::HIGH, "[mmr_txn_router] size[2] injection: upsized write addr={:#x} to AxSIZE=16B\n", addr);
+    req.addr &= upsized_align_mask;
+    req.size_override = upsized_axsize;
+    cvm::log(cvm::HIGH, "[mmr_txn_router] size[2] injection: upsized write addr={:#x} to AxSIZE=16B at {:#x}\n", addr,
+             req.addr);
   }
 
   axi::id_t axi_id;
