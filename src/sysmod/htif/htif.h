@@ -66,4 +66,5 @@ private:
   pty pty_;
 
   int passed_ = 0;
+  int failed_ = 0;
 };

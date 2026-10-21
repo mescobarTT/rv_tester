@@ -13,6 +13,7 @@
 #include "cvm/logger.hpp"
 #include "cvm/plusargs.hpp"
 #include "src/cosim/utils/eot/eot_plusargs.h"
+#include "sysmod_plusargs.h"
 
 DEFINE_bool(htif_flip, false, "Reverse the htif tohost/fromhost address order");
 DEFINE_bool(htif_log, true, "tee htif characters to htif.log");
@@ -85,6 +86,10 @@ htif::htif(const std::string& tag, uint64_t addr, cvm::topology::loc_t loc)
 }
 
 htif::~htif() {
+  if (passed_ == 0 && failed_ == 0)
+    return;
+  cvm::log(cvm::NONE, "HTIF exit summary: passed {}, failed {}, expected {} harts\n",
+           passed_, failed_, FLAGS_num_harts);
 }
 
 static bool
@@ -205,17 +210,23 @@ void htif::write(const transactor::write_t& w) {
     }
   } else if (dev == 0 and cmd == 0) {
     if ((payload & 1) && ((payload >> 1) == uint64_t(0))) {
-      if (passed_ == 0) {
-        cvm::log(cvm::NONE, "Pass condition detected - tohost[0] = 1, tohost[47:1] = 0\n");
-        if (FLAGS_eot != "tohost_all") {
-          cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = true});
+      passed_++;
+      cvm::log(cvm::NONE, "Pass condition detected - tohost[0] = 1, tohost[47:1] = 0 ({}/{}) axi_id={}\n", passed_, FLAGS_num_harts, w.id);
+      if (FLAGS_eot == "tohost_all") {
+        if (passed_ + failed_ == int(FLAGS_num_harts)) {
+          cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = failed_ == 0});
         }
       } else if (passed_ == 1) {
-        cvm::log(cvm::NONE, "Pass condition detected - tohost[0] = 1, tohost[47:1] = 0 again, no longer going to log successive writes\n");
+        cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = true});
       }
-      passed_++;
     } else {
-      cvm::log(cvm::ERROR, "Error: Fail condition detected - tohost[0]={:#x}, tohost[47:1]={:#x}\n", (payload & 1), (payload >> 1));
+      failed_++;
+      cvm::log(cvm::ERROR, "Error: Fail condition detected - tohost[0]={:#x}, tohost[47:1]={:#x} ({}/{}) axi_id={}\n", (payload & 1), (payload >> 1), failed_, FLAGS_num_harts, w.id);
+      if (FLAGS_eot == "tohost_all") {
+        if (passed_ + failed_ == int(FLAGS_num_harts)) {
+          cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = false});
+        }
+      }
     }
   } else {
     assert(0);
