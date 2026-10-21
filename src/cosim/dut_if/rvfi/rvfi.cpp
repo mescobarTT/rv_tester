@@ -1134,6 +1134,14 @@ extern "C" __attribute__((weak)) const char* get_stall_probable_cause() {
   return "";
 }
 
+// Prints the max_stall_cycle error here so the probable-cause string never
+// crosses the DPI boundary (string-returning DPI is not supported on emulators).
+extern "C" void report_max_stall_timeout(int hart, long long max_stall_cycle) {
+  cvm::log(cvm::ERROR, "\nError: Hart {}: No instruction retired for max_stall_cycle ({}) cycles. {}\n",
+           hart, static_cast<unsigned long long>(max_stall_cycle), get_stall_probable_cause());
+  std::cout.flush();
+}
+
 bool get_csr_name_instr(const std::string& input, std::string& modified_string) {
   // Define the regex pattern to find 'c' followed by digits
   std::regex pattern(R"(c(\d+))");
