@@ -1200,8 +1200,10 @@ void bridge::pre_step_interrupt_process(hart_id_t hart, const rv_instr_t& d) {
   uint64_t w_cause = 0;
   check_interrupt(hart, d.cycle, w_intr, w_cause, w_virt_mode);
 
-  // If Whisper takes interrupt, then increase age of the interrupt
-  if (w_intr)
+  // Age a deferred interrupt only once the DUT mip shows its cause pending;
+  // retires spent in the pin-to-mip pipeline lie outside the retire-queue
+  // bound that max_pend_intr_age expresses.
+  if (w_intr && w_cause < 64 && dut_mip_.test(w_cause))
     deferred_intr_age_[w_cause]++;
 
   // If DUT takes interrupt, then undefer all interrupts
@@ -2861,6 +2863,9 @@ std::string bridge::to_string(rv_intr_t& i) {
 void bridge::process_dut_interrupt(hart_id_t hart, rv_intr_t& i) {
   // Store for tracking
   mip_ = i.mip;
+  dut_mip_ = i.mip;
+  if (i.seip)
+    dut_mip_.set(SEI);
   hw_mip_ = i.hw ? i.mip : hw_mip_;
   e_mip_ = (i.mip[MEI] << MEI) | ((i.mip[SEI] | i.seip) << SEI);
 
