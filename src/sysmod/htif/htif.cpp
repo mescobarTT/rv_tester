@@ -212,21 +212,15 @@ void htif::write(const transactor::write_t& w) {
     if ((payload & 1) && ((payload >> 1) == uint64_t(0))) {
       passed_++;
       cvm::log(cvm::NONE, "Pass condition detected - tohost[0] = 1, tohost[47:1] = 0 ({}/{}) axi_id={}\n", passed_, FLAGS_num_harts, w.id);
-      if (FLAGS_eot == "tohost_all") {
-        if (passed_ + failed_ == int(FLAGS_num_harts)) {
-          cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = failed_ == 0});
-        }
-      } else if (passed_ == 1) {
+      if (FLAGS_eot != "tohost_all") {
         cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = true});
       }
     } else {
       failed_++;
       cvm::log(cvm::ERROR, "Error: Fail condition detected - tohost[0]={:#x}, tohost[47:1]={:#x} ({}/{}) axi_id={}\n", (payload & 1), (payload >> 1), failed_, FLAGS_num_harts, w.id);
-      if (FLAGS_eot == "tohost_all") {
-        if (passed_ + failed_ == int(FLAGS_num_harts)) {
-          cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = false});
-        }
-      }
+    }
+    if (FLAGS_eot == "tohost_all" && passed_ + failed_ == int(FLAGS_num_harts)) {
+      cvm::registry::messenger.signal<terminate_t>(cvm::topology::get_from_hierarchy("TOP.PLATFORM", 0), terminate_t{.low_priority_based = true, .passed = failed_ == 0});
     }
   } else {
     assert(0);
